@@ -2,7 +2,7 @@ name: Publish Stardust
 on:
   workflow_dispatch:
   schedule: [{ cron: '*/10 * * * *' }]
-  push: { branches: [main], paths: ['scripts/**', 'assets/**', '.github/workflows/**'] }
+  push: { branches: [main], paths: ['scripts/**', 'assets/**', 'shell.html', '.github/workflows/**'] }
 permissions: { contents: read, pages: write, id-token: write }
 concurrency: { group: pages, cancel-in-progress: false }
 jobs:
