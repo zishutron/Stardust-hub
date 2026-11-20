@@ -3,13 +3,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 const DB = (process.env.FIREBASE_DB_URL || 'https://stardust-hub-default-rtdb.firebaseio.com').replace(/\/$/, '');
-const BASE = (process.env.SITE_BASE_URL || 'https://stardustofficial.github.io/Stardust-hub').replace(/\/$/, '');
+const BASE = (process.env.SITE_BASE_URL || 'https://zishutron.github.io/Stardust-hub').replace(/\/$/, '');
 const ROOT = process.cwd();
+const PFX = new URL(BASE).pathname.replace(/\/$/, ''); // '/Stardust-hub' on project pages, '' on custom domain
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const safeId = s => String(s).replace(/[^a-zA-Z0-9_-]/g, '');
 const cnt = o => (o && typeof o === 'object') ? Object.keys(o).length : 0;
 const ago = t => { const d = (Date.now() - t) / 1000; return d < 60 ? 'now' : d < 3600 ? ~~(d/60) + 'm' : d < 86400 ? ~~(d/3600) + 'h' : ~~(d/86400) + 'd'; };
-const write = (f, c) => { const p = path.join(ROOT, f); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, c); };
+const write = (f, c) => { if (PFX && f.endsWith('.html')) c = c.replace(/(href|src)="\/(?!\/)/g, `$1="${PFX}/`); const p = path.join(ROOT, f); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, c); };
 const get = async n => process.env.DATA_FILE ? (JSON.parse(fs.readFileSync(process.env.DATA_FILE, 'utf8'))[n] || {}) : (await (await fetch(`${DB}/${n}.json`)).json()) || {};
 
 // Only public content is fetched. /users is NOT read (it holds email/phone); name+avatar are already stored on each post/reel.
