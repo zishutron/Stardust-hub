@@ -11,7 +11,12 @@ const safeId = s => String(s).replace(/[^a-zA-Z0-9_-]/g, '');
 const cnt = o => (o && typeof o === 'object') ? Object.keys(o).length : 0;
 const ago = t => { const d = (Date.now() - t) / 1000; return d < 60 ? 'now' : d < 3600 ? ~~(d/60) + 'm' : d < 86400 ? ~~(d/3600) + 'h' : ~~(d/86400) + 'd'; };
 const write = (f, c) => { if (PFX && f.endsWith('.html')) c = c.replace(/(href|src)="\/(?!\/)/g, `$1="${PFX}/`); const p = path.join(ROOT, f); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, c); };
-const get = async n => process.env.DATA_FILE ? (JSON.parse(fs.readFileSync(process.env.DATA_FILE, 'utf8'))[n] || {}) : (await (await fetch(`${DB}/${n}.json`)).json()) || {};
+const get = async n => {
+  if (process.env.DATA_FILE) return JSON.parse(fs.readFileSync(process.env.DATA_FILE, 'utf8'))[n] || {};
+  const j = await (await fetch(`${DB}/${n}.json`)).json();
+  if (j && j.error) throw new Error(`Firebase /${n}: "${j.error}". Is public read enabled for /${n} in Realtime Database rules?`);
+  return j || {};
+};
 
 // Only public content is fetched. /users is NOT read (it holds email/phone); name+avatar are already stored on each post/reel.
 const [rawPosts, rawReels] = await Promise.all([get('publications'), get('reels')]);
