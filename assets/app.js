@@ -11,7 +11,7 @@
 
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail, deleteUser } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
-        import { getDatabase, ref, set, onValue, push, update, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
+        import { getDatabase, ref, set, onValue, push, update, get, remove, runTransaction, query, orderByChild, orderByKey, equalTo, limitToLast, endBefore } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
 
         // ===== FIREBASE CONFIG =====
         const firebaseConfig = {
@@ -36,6 +36,53 @@
         };
 
         const FIXED_PROFESSIONS = ["Architect", "Software Engineer", "Systems Analyst", "Cybersecurity Specialist", "Creative Designer"];
+
+        // ===== IMAGE UPLOAD (ImgBB, 10 keys with automatic fallback) =====
+        const IMGBB_KEYS = [
+            '742851e212792d6bfc672313108289c0',
+            'bf18416a217228e4e067a94faa6c10a8',
+            'd75c4ca4974dc5b81fd0e1739da86b52',
+            '36645f7ee1bc25d4b4e76c05cfef33d4',
+            '89a6970a7e668212364be3a74c198aba',
+            '721373c358c1f1d72259d8d8523b677a',
+            '207a855fc5ff274c3c2380cfad628b4b',
+            '736e4e92f0e1d37c2ddf9d68962b02c7',
+            '0c4ee72d5170a06cde2bb96ebba382e1',
+            '9fa796204c10145c452d16e329d708ff'
+        ];
+        const FEED_LIMIT = 40;
+        function compressImage(file, maxSide = 1280, quality = 0.82) {
+            return new Promise((resolve) => {
+                if (!file.type || !file.type.startsWith('image/') || file.type === 'image/gif' || file.size < 200 * 1024) return resolve(file);
+                const img = new Image(), url = URL.createObjectURL(file);
+                img.onload = () => {
+                    URL.revokeObjectURL(url);
+                    const k = Math.min(1, maxSide / Math.max(img.width, img.height));
+                    const c = document.createElement('canvas');
+                    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+                    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+                    c.toBlob((b) => resolve(b && b.size < file.size ? b : file), 'image/jpeg', quality);
+                };
+                img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+                img.src = url;
+            });
+        }
+        // Tries the keys in random order (spreads the load); if one key is out of quota or fails, the next one is used.
+        async function uploadImage(file, maxSide) {
+            const blob = await compressImage(file, maxSide);
+            const order = IMGBB_KEYS.slice().sort(() => Math.random() - 0.5);
+            let netErrors = 0;
+            for (const key of order) {
+                try {
+                    const fd = new FormData(); fd.append('image', blob);
+                    const res = await fetch('https://api.imgbb.com/1/upload?key=' + key, { method: 'POST', body: fd });
+                    const d = await res.json().catch(() => ({}));
+                    if (d && d.success && d.data && d.data.url) return d.data.url;
+                } catch (e) { if (++netErrors >= 3) break; }
+            }
+            throw new Error('All image upload keys failed');
+        }
+        const IMG_FAIL = () => showSuccessToast('Error', 'Image upload failed. Please try again.', '❌');
         
         // ===== DATABASE STATE =====
         let databaseState = {
@@ -575,14 +622,11 @@
             };
 
             if (pfpFile) {
-                const reader = new FileReader();
-                reader.onload = (e) => processSignup(e.target.result);
-                reader.onerror = () => {
-                    showSuccessToast('Error', 'Failed to read profile image.', '❌');
+                uploadImage(pfpFile, 512).then((url) => processSignup(url)).catch(() => {
+                    IMG_FAIL();
                     document.getElementById('btn-text-signup').classList.remove('hidden');
                     document.getElementById('btn-spinner-signup').classList.add('hidden');
-                };
-                reader.readAsDataURL(pfpFile);
+                });
             } else {
                 processSignup(null);
             }
@@ -597,7 +641,7 @@
             if(identifier.includes('@')) {
                 executeFirebaseSignIn(identifier, password);
             } else {
-                onValue(ref(db, 'users'), (snapshot) => {
+                onValue(query(ref(db, 'users'), orderByChild('uid'), equalTo(identifier)), (snapshot) => {
                     const data = snapshot.val();
                     let targetEmail = null;
                     if(data) {
@@ -618,7 +662,7 @@
         function executeFirebaseSignIn(email, password) {
             signInWithEmailAndPassword(auth, email, password)
                 .then((userCredential) => {
-                    onValue(ref(db, 'users'), (snapshot) => {
+                    onValue(query(ref(db, 'users'), orderByChild('realFirebaseUID'), equalTo(userCredential.user.uid)), (snapshot) => {
                         const data = snapshot.val();
                         if(data) {
                             const mappedNode = Object.values(data).find(p => p.realFirebaseUID === userCredential.user.uid);
@@ -655,7 +699,7 @@
 
         onAuthStateChanged(auth, (user) => {
             if (user) {
-                onValue(ref(db, 'users'), (snapshot) => {
+                onValue(query(ref(db, 'users'), orderByChild('realFirebaseUID'), equalTo(user.uid)), (snapshot) => {
                     const data = snapshot.val();
                     if(data) {
                         const mappedNode = Object.values(data).find(p => p.realFirebaseUID === user.uid);
@@ -1088,13 +1132,7 @@
             };
 
             if(imgFile) {
-                const reader = new FileReader();
-                reader.onload = (e) => commitPostToFirebase(e.target.result);
-                reader.onerror = () => {
-                    hideUploadLoading();
-                    showSuccessToast('Error', 'Failed to read image file.', '❌');
-                };
-                reader.readAsDataURL(imgFile);
+                uploadImage(imgFile).then((url) => commitPostToFirebase(url)).catch(() => { hideUploadLoading(); IMG_FAIL(); });
             } else {
                 commitPostToFirebase(null);
             }
@@ -1103,15 +1141,46 @@
         // ============================================================
         // LOAD POSTS
         // ============================================================
+        
+        // ===== FEED: newest posts first, older ones load while scrolling =====
+        let feedOldestKey = null, feedExhausted = false, feedLoadingMore = false;
+        function trackFeedKeys(data) {
+            const ks = data ? Object.keys(data).sort() : [];
+            if (ks.length && (!feedOldestKey || ks[0] < feedOldestKey)) feedOldestKey = ks[0];
+            if (ks.length < FEED_LIMIT && !feedLoadingMore) feedExhausted = true;
+        }
+        function mergeFeed(fresh) {
+            const ids = new Set(fresh.map(p => p.id));
+            const oldestTs = fresh.length ? Math.min(...fresh.map(p => p.timestamp || 0)) : Infinity;
+            const keep = databaseState.publications.filter(p => !ids.has(p.id) && (p.timestamp || 0) < oldestTs);
+            return fresh.concat(keep).sort((a, b) => b.timestamp - a.timestamp);
+        }
+        window.loadMorePosts = function() {
+            if (!feedOldestKey || feedExhausted || feedLoadingMore) return;
+            feedLoadingMore = true;
+            document.getElementById('feed-loader')?.classList.remove('hidden');
+            get(query(ref(db, 'publications'), orderByKey(), endBefore(feedOldestKey), limitToLast(20))).then((snap) => {
+                const d = snap.val() || {}, ks = Object.keys(d).sort();
+                if (!ks.length) { feedExhausted = true; document.getElementById('feed-end-msg')?.classList.remove('hidden'); return; }
+                feedOldestKey = ks[0];
+                if (ks.length < 20) feedExhausted = true;
+                const more = ks.map(k => d[k]).filter(p => p && p.id && (p.text || p.image));
+                databaseState.publications = mergeFeed(more.concat(databaseState.publications));
+                renderEcosystemFeed();
+            }).catch(() => {}).finally(() => { feedLoadingMore = false; document.getElementById('feed-loader')?.classList.add('hidden'); });
+        };
+        const feedSentinel = document.getElementById('feed-sentinel');
+        if (feedSentinel && 'IntersectionObserver' in window) new IntersectionObserver((es) => { if (es[0].isIntersecting) loadMorePosts(); }, { rootMargin: '500px' }).observe(feedSentinel);
+
         let snapFeedDone = false, snapReelsDone = false;
         function loadSnapshot(name, done) {
             fetch('data/' + name + '.json').then(r => r.ok ? r.json() : []).then(arr => { if (Array.isArray(arr) && arr.length) done(arr); }).catch(() => {});
         }
         function loadInitialPosts() {
             if (!snapFeedDone) { snapFeedDone = true; loadSnapshot('feed', arr => { if (!databaseState.publications.length) { databaseState.publications = arr; renderEcosystemFeed(); tryOpenPendingPost(); } }); }
-            const postsRef = ref(db, 'publications');
+            const postsRef = query(ref(db, 'publications'), limitToLast(FEED_LIMIT));
             get(postsRef).then((snapshot) => {
-                const data = snapshot.val();
+                const data = snapshot.val(); trackFeedKeys(data);
                 let loadedPosts = [];
                 if (data) {
                     Object.keys(data).forEach(k => {
@@ -1121,7 +1190,7 @@
                         }
                     });
                 }
-                databaseState.publications = loadedPosts.sort((a, b) => b.timestamp - a.timestamp);
+                databaseState.publications = mergeFeed(loadedPosts);
                 renderEcosystemFeed(); tryOpenPendingPost();
             }).catch((error) => {
                 console.error('Error loading posts:', error);
@@ -1211,7 +1280,7 @@
                 return;
             }
 
-            const pubRef = ref(db, 'publications');
+            const pubRef = query(ref(db, 'publications'), orderByChild('id'), equalTo(editingPostId));
             get(pubRef).then((snap) => {
                 const data = snap.val();
                 if (data) {
@@ -1224,17 +1293,14 @@
                     if (dbKey) {
                         const updates = { text: newText };
                         if (newImageFile) {
-                            const reader = new FileReader();
-                            reader.onload = (e) => {
-                                updates.image = e.target.result;
+                            uploadImage(newImageFile).then((url) => { updates.image = url;
                                 update(ref(db, `publications/${dbKey}`), updates).then(() => {
                                     closeModal('edit-post-modal');
                                     showSuccessToast('Post Updated!', 'Your post has been updated.', '✅');
                                     loadInitialPosts();
                                     editingPostId = null;
                                 });
-                            };
-                            reader.readAsDataURL(newImageFile);
+                            }).catch(IMG_FAIL);
                         } else {
                             update(ref(db, `publications/${dbKey}`), updates).then(() => {
                                 closeModal('edit-post-modal');
@@ -1264,7 +1330,7 @@
             }
             
             if (confirm('Are you sure you want to delete this post?')) {
-                const pubRef = ref(db, 'publications');
+                const pubRef = query(ref(db, 'publications'), orderByChild('id'), equalTo(postId));
                 get(pubRef).then((snap) => {
                     const data = snap.val();
                     if (data) {
@@ -1315,7 +1381,7 @@
             }
             
             if (confirm('Are you sure you want to delete this comment?')) {
-                const pubRef = ref(db, 'publications');
+                const pubRef = query(ref(db, 'publications'), orderByChild('id'), equalTo(postId));
                 get(pubRef).then((snap) => {
                     const data = snap.val();
                     if (data) {
@@ -1493,7 +1559,7 @@
             const txt = field.value.trim();
             if(!txt) return;
 
-            onValue(ref(db, 'publications'), (snap) => {
+            get(query(ref(db, 'publications'), orderByChild('id'), equalTo(postId))).then((snap) => {
                 const data = snap.val();
                 if(data) {
                     const dbKey = Object.keys(data).find(k => data[k] && data[k].id === postId);
@@ -1530,7 +1596,7 @@
         // LIKE TOGGLE (Posts)
         // ============================================================
         window.handlePublicationLikeToggle = function(postId) {
-            const pubRef = ref(db, 'publications');
+            const pubRef = query(ref(db, 'publications'), orderByChild('id'), equalTo(postId));
             get(pubRef).then((snap) => {
                 const data = snap.val();
                 if(data) {
@@ -1672,7 +1738,7 @@
             if (!editingReelId) return;
             const newCaption = document.getElementById('edit-reel-caption').value.trim();
             
-            const reelRef = ref(db, 'reels');
+            const reelRef = query(ref(db, 'reels'), orderByChild('id'), equalTo(editingReelId));
             get(reelRef).then((snap) => {
                 const data = snap.val();
                 if (data) {
@@ -1711,7 +1777,7 @@
             }
             
             if (confirm('Are you sure you want to delete this reel?')) {
-                const reelRef = ref(db, 'reels');
+                const reelRef = query(ref(db, 'reels'), orderByChild('id'), equalTo(reelId));
                 get(reelRef).then((snap) => {
                     const data = snap.val();
                     if (data) {
@@ -1746,7 +1812,7 @@
             if (isReelsLoaded) return;
             isReelsLoaded = true;
             loadSnapshot('reels', arr => { if (!databaseState.reels.length) { databaseState.reels = arr; renderReelsFeed(); focusPendingReel(); } });
-            const reelRef = ref(db, 'reels');
+            const reelRef = query(ref(db, 'reels'), limitToLast(30));
             onValue(reelRef, (snap) => {
                 const data = snap.val();
                 let loadedReels = [];
@@ -1853,7 +1919,7 @@
         // REEL LIKE
         // ============================================================
         window.toggleReelLike = function(reelId) {
-            const reelRef = ref(db, 'reels');
+            const reelRef = query(ref(db, 'reels'), orderByChild('id'), equalTo(reelId));
             get(reelRef).then((snap) => {
                 const data = snap.val();
                 if(data) {
@@ -1966,7 +2032,7 @@
             if (databaseState.reelViewTracked[reelId]) return;
             
             const myUID = databaseState.currentUser.uid;
-            const reelRef = ref(db, 'reels');
+            const reelRef = query(ref(db, 'reels'), orderByChild('id'), equalTo(reelId));
             get(reelRef).then((snap) => {
                 const data = snap.val();
                 if (!data) return;
@@ -2108,7 +2174,7 @@
             if(!targetReel) return;
 
             if(targetReel.comments && Object.keys(targetReel.comments).length > 0) {
-                const reelRef = ref(db, 'reels');
+                const reelRef = query(ref(db, 'reels'), orderByChild('id'), equalTo(reelId));
                 get(reelRef).then((snap) => {
                     const data = snap.val();
                     let reelDbKey = null;
@@ -2158,7 +2224,7 @@
             const txt = field.value.trim();
             if(!txt || !databaseState.activeReelId) return;
 
-            onValue(ref(db, 'reels'), (snap) => {
+            get(query(ref(db, 'reels'), orderByChild('id'), equalTo(databaseState.activeReelId))).then((snap) => {
                 const data = snap.val();
                 if(data) {
                     const dbKey = Object.keys(data).find(k => data[k] && data[k].id === databaseState.activeReelId);
@@ -2391,8 +2457,8 @@
         }
 
         function listenToGlobalSyncChannels(myUID) {
-            onValue(ref(db, 'publications'), (snap) => {
-                const data = snap.val();
+            onValue(query(ref(db, 'publications'), limitToLast(FEED_LIMIT)), (snap) => {
+                const data = snap.val(); trackFeedKeys(data);
                 let loadedPosts = [];
                 if (data) {
                     Object.keys(data).forEach(k => {
@@ -2402,7 +2468,7 @@
                         }
                     });
                 }
-                databaseState.publications = loadedPosts.sort((a, b) => b.timestamp - a.timestamp);
+                databaseState.publications = mergeFeed(loadedPosts);
                 renderEcosystemFeed();
             });
 
@@ -3007,9 +3073,7 @@
             };
 
             if(fileInput.files && fileInput.files[0]) {
-                const reader = new FileReader();
-                reader.onload = function(e) { commitUpdates(e.target.result); };
-                reader.readAsDataURL(fileInput.files[0]);
+                uploadImage(fileInput.files[0], 512).then(commitUpdates).catch(IMG_FAIL);
             } else {
                 commitUpdates(null);
             }
